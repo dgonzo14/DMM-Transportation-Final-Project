@@ -1,0 +1,7 @@
+apache-airflow
+requests
+pandas
+protobuf
+gtfs-realtime-bindings
+snowflake-connector-python[pandas]
+python-dotenv

@@ -1,0 +1,18 @@
+SNOWFLAKE_ACCOUNT=your_account
+SNOWFLAKE_USER=your_user
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_WAREHOUSE=your_warehouse
+SNOWFLAKE_DATABASE=TRANSIT
+SNOWFLAKE_SCHEMA=RAW
+SNOWFLAKE_ROLE=your_role
+
+MTA_SUBWAY_FEEDS_JSON=[
+  {"feed_name":"subway_feed_1","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"},
+  {"feed_name":"subway_feed_2","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"},
+  {"feed_name":"subway_feed_3","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g"},
+  {"feed_name":"subway_feed_4","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz"},
+  {"feed_name":"subway_feed_5","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw"},
+  {"feed_name":"subway_feed_6","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l"},
+  {"feed_name":"subway_feed_7","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"},
+  {"feed_name":"subway_feed_8","url":"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-si"}
+]

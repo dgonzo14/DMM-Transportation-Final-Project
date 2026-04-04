@@ -1,0 +1,2 @@
+export PYTHONPATH="$HOME/gtfs_only_lib"
+python -c "import requests, pandas, google.protobuf, snowflake.connector; from google.transit import gtfs_realtime_pb2; print('imports ok')"
