@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # --- Configuration ---
 TFL_API_BASE_URL = "https://api.tfl.gov.uk"
-TFL_APP_KEY = os.getenv("TFL_APP_KEY", "46b2a94fcbd142308a42ea39105e7f66")  # REQUIRED for Crowding
+TFL_APP_KEY = os.getenv("TFL_APP_KEY")  # REQUIRED for Crowding
 MODES = ["tube"]
 POLL_INTERVAL = 30
 CROWDING_INTERVAL = 300  # Crowding updates slower; 5 mins (300s) is safer for rate limits
