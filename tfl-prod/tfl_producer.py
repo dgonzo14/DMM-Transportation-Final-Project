@@ -9,15 +9,31 @@ from abc import ABC, abstractmethod
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from pathlib import Path
+from dotenv import load_dotenv
+
 # --- Configuration ---
+
+# configured for .env to sit in the root directory
+
+script_dir = Path(__file__).resolve().parent
+env_path = script_dir.parent / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+
 TFL_API_BASE_URL = "https://api.tfl.gov.uk"
-TFL_APP_KEY = os.getenv("TFL_APP_KEY")  # REQUIRED for Crowding
+TFL_APP_KEY = os.getenv("TFL_APP_KEY", None)  # REQUIRED for Crowding
+
 MODES = ["tube"]
 POLL_INTERVAL = 30
 CROWDING_INTERVAL = 300  # Crowding updates slower; 5 mins (300s) is safer for rate limits
 ENABLE_CROWDING = True  # Set to False to disable the high-volume requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+if not TFL_APP_KEY:
+    logging.warning("TFL_APP_KEY not set. Crowding data will not be fetched.")
+    ENABLE_CROWDING = False
+    # exit(1) # might be good when we go to prod but lowk annoying rn
 
 
 class DataSink(ABC):
