@@ -3,3 +3,9 @@ charset-normalizer==3.4.7
 idna==3.11
 requests==2.33.1
 urllib3==2.6.3
+
+python-dotenv>=1.0
+protobuf>=4.25,<6
+gtfs-realtime-bindings>=1.0
+pandas>=2.0
+snowflake-connector-python[pandas]>=3.0
