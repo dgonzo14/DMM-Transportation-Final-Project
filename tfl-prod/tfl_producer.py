@@ -2,9 +2,11 @@ import os
 import json
 import time
 import logging
-import requests
 from datetime import datetime
 from abc import ABC, abstractmethod
+
+import requests
+import boto3
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -46,16 +48,41 @@ class LocalFileSystemSink(DataSink):
         self.base_path = base_path
 
     def write(self, data, metadata):
-        type_dir = os.path.join(self.base_path, metadata['data_type'])
-        os.makedirs(type_dir, exist_ok=True)
-        timestamp = metadata['timestamp'].strftime("%Y%m%d_%H%M%S")
-
-        # Unique naming for crowding to prevent overwrites if multiple stations are saved
-        suffix = f"_{metadata.get('naptan')}" if 'naptan' in metadata else f"_{metadata['mode']}"
-        filename = f"tfl{suffix}_{timestamp}.json"
-
-        with open(os.path.join(type_dir, filename), 'w') as f:
+        now = metadata['timestamp']
+        data_type = metadata['data_type']
+        suffix = metadata.get('naptan') or metadata['mode']
+        dir_path = os.path.join(
+            self.base_path,
+            f"bronze/tfl/{data_type}",
+            f"year={now.year}", f"month={now.month:02d}",
+            f"day={now.day:02d}", f"hour={now.hour:02d}"
+        )
+        os.makedirs(dir_path, exist_ok=True)
+        filename = f"{now.strftime('%Y%m%dT%H%M%SZ')}_{data_type}_{suffix}.json"
+        with open(os.path.join(dir_path, filename), 'w') as f:
             json.dump(data, f)
+
+class R2Sink(DataSink):
+    def __init__(self, bucket: str, account_id: str, access_key: str, secret_key: str):
+        self.bucket = bucket
+        self.client = boto3.client(
+            "s3",
+            endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="auto",
+        )
+
+    def write(self, data, metadata):
+        now = metadata['timestamp']
+        data_type = metadata['data_type']
+        suffix = metadata.get('naptan') or metadata['mode']
+        key = (
+            f"bronze/tfl/{data_type}/"
+            f"year={now.year}/month={now.month:02d}/day={now.day:02d}/hour={now.hour:02d}/"
+            f"{now.strftime('%Y%m%dT%H%M%SZ')}_{data_type}_{suffix}.json"
+        )
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=json.dumps(data))
 
 
 class TfLProducer:
@@ -65,11 +92,14 @@ class TfLProducer:
         if TFL_APP_KEY: self.headers["app_key"] = TFL_APP_KEY
 
         self.last_crowding_time = 0
-        self.station_ids = []
+        self.last_status_time = 0
+        self.status_interval = 300  # 5 minutes for Line Status & Lifts
+
+        self.station_ids = None
         if ENABLE_CROWDING:
             self.station_ids = self._discover_stations()
 
-        self.max_workers = 10  # Number of concurrent threads
+        self.max_workers = 10
         self.rate_limit_semaphore = threading.Semaphore(self.max_workers)
 
     def _get(self, endpoint):
@@ -90,33 +120,42 @@ class TfLProducer:
         stations = []
         for mode in MODES:
             data = self._get(f"/StopPoint/Mode/{mode}")
-
-            # THE FIX: TfL returns an object with a 'stopPoints' key which is the list
             if data and "stopPoints" in data:
                 station_list = data["stopPoints"]
                 stations.extend([
                     s['id'] for s in station_list
                     if s.get('stopType') == "NaptanMetroStation"
                 ])
-            else:
-                logging.warning(f"Unexpected data format for mode {mode}")
-
         logging.info(f"Discovered {len(stations)} stations.")
         return list(set(stations))
 
-    def fetch_standard_data(self):
+    def fetch_arrival_data(self):
+        """High-frequency polling (30s refresh cycle)."""
         now = datetime.now()
         for mode in MODES:
-            # 1. Arrivals & 2. Status
-            for dtype, path in [("arrivals", f"/Mode/{mode}/Arrivals"),
-                                ("status", f"/Line/Mode/{mode}/Status?detail=true")]:
-                data = self._get(path)
-                if data:
-                    self.sink.write(data, {"mode": mode, "data_type": dtype, "timestamp": now})
-                    logging.info(f"Fetched Arrivals/Status data for {mode} at time {now.strftime('%Y-%m-%d %H:%M:%S')}.")
+            # Polling mode-level arrivals is most efficient for bulk data [1]
+            data = self._get(f"/Mode/{mode}/Arrivals")
+            if data:
+                self.sink.write(data, {"mode": mode, "data_type": "arrivals", "timestamp": now})
+                logging.info(f"Fetched Arrivals for {mode} at {now.isoformat()}.")
+
+    def fetch_system_status(self):
+        """Lower-frequency polling (5m refresh cycle) for operational metrics."""
+        now = datetime.now()
+        for mode in MODES:
+            # 1. Line Status (General health) [2]
+            status_data = self._get(f"/Line/Mode/{mode}/Status?detail=true")
+            if status_data:
+                self.sink.write(status_data, {"mode": mode, "data_type": "status", "timestamp": now})
+
+            # 2. Lift/Escalator Disruptions (Competency/Accessibility metric)
+            lift_data = self._get("/Disruptions/Lifts/v2")
+            if lift_data:
+                self.sink.write(lift_data, {"mode": mode, "data_type": "lift_disruptions", "timestamp": now})
+
+        logging.info(f"Fetched Status & Lift data at {now.isoformat()}.")
 
     def _fetch_single_station_crowding(self, naptan, timestamp):
-        """Worker function for a single station."""
         with self.rate_limit_semaphore:
             data = self._get(f"/crowding/{naptan}/Live")
             if data:
@@ -125,28 +164,27 @@ class TfLProducer:
                     "data_type": "crowding",
                     "timestamp": timestamp
                 })
-            # Keep a small buffer so we don't overwhelm the API burst limit
             time.sleep(0.1)
 
     def fetch_crowding_data(self):
-        """Queries station IDs concurrently using a thread pool."""
         now = datetime.now()
-        logging.info(f"Starting concurrent crowding poll for {len(self.station_ids)} stations...")
-
+        logging.info(f"Starting crowding poll for {len(self.station_ids)} stations...")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Map the worker function across all discovered NaPTANs
             executor.map(lambda n: self._fetch_single_station_crowding(n, now), self.station_ids)
-
-        logging.info("Finished crowding poll.")
 
     def run(self):
         while True:
             loop_start = time.time()
 
-            # Standard Data (Arrivals/Status)
-            self.fetch_standard_data()
+            # 1. High-frequency: Arrivals (Poll every 30s) [3, 1]
+            self.fetch_arrival_data()
 
-            # Optional Crowding Data (on a separate schedule)
+            # 2. Medium-frequency: Status & Accessibility (Poll every 5m)
+            if (time.time() - self.last_status_time > self.status_interval):
+                self.fetch_system_status()
+                self.last_status_time = time.time()
+
+            # 3. Scheduled: Crowding Data
             if ENABLE_CROWDING and (time.time() - self.last_crowding_time > CROWDING_INTERVAL):
                 self.fetch_crowding_data()
                 self.last_crowding_time = time.time()
@@ -157,5 +195,11 @@ class TfLProducer:
 
 if __name__ == "__main__":
     storage = LocalFileSystemSink("./landing_zone/tfl")
+    # storage = R2Sink(
+    #     bucket=os.getenv("R2_BUCKET"),
+    #     account_id=os.getenv("R2_ACCOUNT_ID"),
+    #     access_key=os.getenv("R2_ACCESS_KEY"),
+    #     secret_key=os.getenv("R2_SECRET_KEY"),
+    # )
     producer = TfLProducer(sink=storage)
     producer.run()
