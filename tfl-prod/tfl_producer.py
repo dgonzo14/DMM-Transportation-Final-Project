@@ -194,12 +194,12 @@ class TfLProducer:
 
 
 if __name__ == "__main__":
-    storage = LocalFileSystemSink("./landing_zone/tfl")
-    # storage = R2Sink(
-    #     bucket=os.getenv("R2_BUCKET"),
-    #     account_id=os.getenv("R2_ACCOUNT_ID"),
-    #     access_key=os.getenv("R2_ACCESS_KEY"),
-    #     secret_key=os.getenv("R2_SECRET_KEY"),
-    # )
+    # storage = LocalFileSystemSink("./landing_zone/tfl")
+    storage = R2Sink(
+        bucket=os.getenv("R2_BUCKET"),
+        account_id=os.getenv("R2_ACCOUNT_ID"),
+        access_key=os.getenv("R2_ACCESS_KEY"),
+        secret_key=os.getenv("R2_SECRET_KEY"),
+    )
     producer = TfLProducer(sink=storage)
     producer.run()
