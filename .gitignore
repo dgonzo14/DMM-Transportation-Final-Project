@@ -1,2 +1,9 @@
 .env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+logs/
+landing_zone/
 tfl-prod/landing_zone
+feeds.json
