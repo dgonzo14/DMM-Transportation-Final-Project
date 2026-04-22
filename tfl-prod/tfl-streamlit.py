@@ -1,176 +1,351 @@
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
 
-# Set page config
 st.set_page_config(layout="wide", page_title="TfL Performance Command Center")
 
 session = get_active_session()
 
 st.title("🚇 TfL Metro Performance Command Center")
-st.write("Comprehensive real-time analytics across the London Underground network.")
+st.caption("Real-time analytics across the London Underground network.")
 
-# --- 1. DATA LOADING SECTION ---
+# =============================================================================
+# Data loading
+# =============================================================================
+
 @st.cache_data(ttl=600)
 def load_dashboard_data():
-    # KPI 1: Reliability (Line Status)
-    rel_df = session.sql("""
-        SELECT LINE_NAME, HOUR(RECORD_TIMESTAMP) as HR,
-        AVG(CASE WHEN SEVERITY_CODE = 10 THEN 100 ELSE 0 END) as RELIABILITY_PCT
+    queries = {}
+
+    queries["fresh"] = """
+        SELECT DATEDIFF('second', MAX(DATA_CAPTURED_AT), CURRENT_TIMESTAMP()) AS latency
+        FROM SILVER_TFL_ARRIVALS
+    """
+
+    queries["stats"] = """
+        SELECT
+            COUNT(DISTINCT PREDICTION_ID)  AS total_trips,
+            COUNT(DISTINCT STATION_ID)     AS active_stations,
+            COUNT(DISTINCT VEHICLE_ID)     AS active_trains
+        FROM SILVER_TFL_ARRIVALS
+    """
+
+    queries["lag_line"] = """
+        SELECT LINE_ID, ROUND(AVG(prediction_error_seconds), 1) AS avg_error
+        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
+        GROUP BY 1 ORDER BY avg_error DESC LIMIT 1
+    """
+
+    queries["on_time"] = """
+        SELECT
+            LINE_ID,
+            SERVICE_PERIOD,
+            ROUND(AVG(IS_ON_TIME) * 100, 1)  AS on_time_pct,
+            COUNT(*)                          AS sample_size
+        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
+        GROUP BY 1, 2
+        HAVING sample_size > 10
+        ORDER BY 1, 2
+    """
+
+    queries["reliability"] = """
+        SELECT LINE_NAME, HOUR(RECORD_TIMESTAMP) AS hr,
+               AVG(CASE WHEN SEVERITY_CODE = 10 THEN 100 ELSE 0 END) AS reliability_pct
         FROM SILVER_TFL_LINE_STATUS GROUP BY 1, 2 ORDER BY 2
-    """).to_pandas()
+    """
 
-    # KPI 2: Crowding
-    crowd_df = session.sql("""
-        SELECT OBSERVATION_TIME_UTC, CROWDING_PERCENTAGE
-        FROM SILVER_TFL_CROWDING ORDER BY OBSERVATION_TIME_UTC ASC
-    """).to_pandas()
-
-    # KPI 3: Lifts
-    lift_df = session.sql("""
-        SELECT STATION_ID, COUNT(DISTINCT LIFT_ID) as DISRUPTION_COUNT
-        FROM SILVER_TFL_LIFT_DISRUPTIONS GROUP BY 1 ORDER BY 2 DESC LIMIT 10
-    """).to_pandas()
-
-    # KPI 4: Arrival Performance & Prediction Bias
-    gold_df = session.sql("""
-        SELECT 
-            LINE_ID, 
-            PREDICTION_ERROR_SECONDS,
-            CASE 
-                WHEN HOUR(initial_expected_ts) BETWEEN 7 AND 9 THEN 'AM Peak'
-                WHEN HOUR(initial_expected_ts) BETWEEN 16 AND 18 THEN 'PM Peak'
-                ELSE 'Off-Peak' 
-            END as PERIOD
+    queries["ghost_trains"] = """
+        SELECT
+            LINE_ID,
+            COUNT(*)                                                          AS total_trips,
+            COUNT_IF(minutes_tracked < 2 AND prediction_error_seconds > 60)  AS ghost_count,
+            ROUND(ghost_count / NULLIF(total_trips, 0) * 100, 2)             AS ghost_pct,
+            ROUND(AVG(minutes_tracked), 2)                                    AS avg_visibility_mins
         FROM GOLD_TFL_ARRIVAL_PERFORMANCE
-    """).to_pandas()
+        GROUP BY 1 ORDER BY ghost_pct DESC
+    """
 
-    # KPI 5: Jitter (Data Stability)
-    j_df = session.sql("""
-        SELECT STATION_NAME, LINE_ID, AVG(prediction_jitter) as AVG_JITTER, COUNT(*) as SAMPLE_SIZE
-        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
-        GROUP BY 1, 2 HAVING SAMPLE_SIZE > 5
-        ORDER BY AVG_JITTER DESC LIMIT 15
-    """).to_pandas()
-
-    # KPI 6: Headway Analysis (Service Frequency)
-    headway_df = session.sql("""
+    queries["headway"] = """
         WITH arrival_times AS (
             SELECT LINE_ID, STATION_NAME, actual_arrival_ts,
-            LAG(actual_arrival_ts) OVER (PARTITION BY LINE_ID, STATION_NAME ORDER BY actual_arrival_ts ASC) as prev_arrival_ts
+                LAG(actual_arrival_ts) OVER (
+                    PARTITION BY LINE_ID, STATION_NAME
+                    ORDER BY actual_arrival_ts ASC
+                ) AS prev_arrival_ts
             FROM GOLD_TFL_ARRIVAL_PERFORMANCE
         )
-        SELECT LINE_ID, 
-        AVG(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)) / 60 as AVG_HEADWAY_MINS,
-        STDDEV(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)) as HEADWAY_VARIANCE
-        FROM arrival_times WHERE prev_arrival_ts IS NOT NULL
+        SELECT
+            LINE_ID,
+            ROUND(AVG(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)) / 60.0, 2) AS avg_headway_mins,
+            ROUND(STDDEV(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)) / 60.0, 2) AS headway_stddev,
+            ROUND(
+                STDDEV(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)) /
+                NULLIF(AVG(DATEDIFF('second', prev_arrival_ts, actual_arrival_ts)), 0) * 100,
+                1
+            ) AS headway_cv_pct
+        FROM arrival_times
+        WHERE prev_arrival_ts IS NOT NULL
         GROUP BY 1
-    """).to_pandas()
+    """
 
-    # Update KPI 7 in load_dashboard_data()
-    fresh_df = session.sql("""
-        SELECT 
-            DATEDIFF('second', MAX(DATA_CAPTURED_AT), CURRENT_TIMESTAMP()) as LATENCY
-        FROM SILVER_TFL_ARRIVALS
-    """).to_pandas()
+    queries["gold_sample"] = """
+        SELECT LINE_ID, PREDICTION_ERROR_SECONDS, SERVICE_PERIOD, IS_ON_TIME
+        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
+    """
 
-    stats_df = session.sql("""
-        SELECT 
-            COUNT(DISTINCT PREDICTION_ID) as TOTAL_TRIPS,
-            COUNT(DISTINCT STATION_ID) as ACTIVE_STATIONS,
-            COUNT(DISTINCT VEHICLE_ID) as ACTIVE_TRAINS,
-            -- We keep these subqueries pointed at GOLD because 
-            -- 'Lag' and 'Busiest' need the performance math.
-            (SELECT LINE_ID FROM GOLD_TFL_ARRIVAL_PERFORMANCE 
-             GROUP BY 1 ORDER BY AVG(prediction_error_seconds) DESC LIMIT 1) as LAG_LINE,
-            (SELECT STATION_NAME FROM GOLD_TFL_ARRIVAL_PERFORMANCE 
-             GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1) as TOP_STATION
-        FROM SILVER_TFL_ARRIVALS -- Changed from GOLD to SILVER
-    """).to_pandas()
+    queries["jitter"] = """
+        SELECT STATION_NAME, LINE_ID,
+               ROUND(AVG(prediction_jitter), 2) AS avg_jitter,
+               COUNT(*)                          AS sample_size
+        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
+        GROUP BY 1, 2 HAVING sample_size > 5
+        ORDER BY avg_jitter DESC LIMIT 15
+    """
 
-    return rel_df, crowd_df, lift_df, gold_df, j_df, headway_df, fresh_df, stats_df
+    queries["crowding"] = """
+        SELECT OBSERVATION_TIME_UTC, CROWDING_PERCENTAGE
+        FROM SILVER_TFL_CROWDING ORDER BY OBSERVATION_TIME_UTC ASC
+    """
 
-# Load Data
-df_rel, df_crowd, df_lift, df_gold, df_jitter, df_headway, df_fresh, df_stats = load_dashboard_data()
+    queries["lift"] = """
+        SELECT STATION_ID, COUNT(DISTINCT LIFT_ID) AS disruption_count
+        FROM SILVER_TFL_LIFT_DISRUPTIONS GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+    """
 
-# --- 2. SYSTEM VITAL SIGNS ---
-latency = df_fresh['LATENCY'].iloc[0]
+    queries["lift_trend"] = """
+        SELECT DATE_TRUNC('hour', record_timestamp) AS hour_bucket,
+               COUNT(DISTINCT lift_id)              AS disruptions
+        FROM SILVER_TFL_LIFT_DISRUPTIONS
+        GROUP BY 1 ORDER BY 1
+    """
+
+    queries["ticker"] = """
+        SELECT
+            actual_arrival_ts::TIME  AS time,
+            LINE_ID,
+            STATION_NAME,
+            prediction_error_seconds AS delay_sec,
+            IS_ON_TIME
+        FROM GOLD_TFL_ARRIVAL_PERFORMANCE
+        ORDER BY actual_arrival_ts DESC LIMIT 10
+    """
+
+    return {k: session.sql(v).to_pandas() for k, v in queries.items()}
+
+
+data = load_dashboard_data()
+
+# =============================================================================
+# System health banner
+# =============================================================================
+
+latency = data["fresh"]["LATENCY"].iloc[0]
 if latency < 60:
-    st.success(f"🟢 System Health: Data Fresh ({latency:.0f}s lag)")
+    st.success(f"🟢 Pipeline healthy — data {latency:.0f}s old")
 elif latency < 180:
-    st.warning(f"🟡 System Health: Data Lagging ({latency:.0f}s lag)")
+    st.warning(f"🟡 Data lagging — {latency:.0f}s behind")
 else:
-    st.error(f"🔴 System Health: Pipeline Stalled ({latency:.0f}s lag)")
+    st.error(f"🔴 Pipeline stalled — {latency:.0f}s behind")
 
-# --- 3. NETWORK PULSE (Aggregate Metrics) ---
-c1, c2, c3, c4, c5 = st.columns(5)
+# =============================================================================
+# Top KPIs
+# =============================================================================
+
+stats = data["stats"].iloc[0]
+lag_row = data["lag_line"].iloc[0] if not data["lag_line"].empty else None
+on_time_overall = data["gold_sample"]["IS_ON_TIME"].mean() * 100
+
+ghost_total = data["ghost_trains"]["GHOST_COUNT"].sum()
+ghost_rate = (ghost_total / data["ghost_trains"]["TOTAL_TRIPS"].sum() * 100) if data["ghost_trains"]["TOTAL_TRIPS"].sum() > 0 else 0
+
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
-    st.metric("Trips Tracked", f"{df_stats['TOTAL_TRIPS'].iloc[0]:,}")
+    st.metric("Trips Tracked", f"{int(stats['TOTAL_TRIPS']):,}")
 with c2:
-    st.metric("Active Stations", df_stats['ACTIVE_STATIONS'].iloc[0])
+    st.metric("Active Stations", int(stats['ACTIVE_STATIONS']))
 with c3:
-    st.metric("Active Trains", df_stats['ACTIVE_TRAINS'].iloc[0])
+    st.metric("Active Trains", int(stats['ACTIVE_TRAINS']))
 with c4:
-    st.metric("Laggiest Line", df_stats['LAG_LINE'].iloc[0].title())
+    st.metric("Network On-Time %", f"{on_time_overall:.1f}%")
 with c5:
-    st.metric("Top Station", df_stats['TOP_STATION'].iloc[0][:15] + "...")
+    lag_label = lag_row['LINE_ID'].title() if lag_row is not None else "—"
+    lag_val = f"+{lag_row['AVG_ERROR']:.0f}s" if lag_row is not None else "—"
+    st.metric("Laggiest Line", lag_label, delta=lag_val, delta_color="inverse")
+with c6:
+    st.metric("Ghost Train Rate", f"{ghost_rate:.1f}%")
 
 st.divider()
 
-# --- 4. RELIABILITY & FREQUENCY ---
-col_a, col_b = st.columns(2)
-with col_a:
-    st.subheader("Reliability Heatmap")
-    pivot_df = df_rel.pivot(index='LINE_NAME', columns='HR', values='RELIABILITY_PCT')
-    fig_rel = px.imshow(pivot_df, color_continuous_scale='RdYlGn', range_color=[0, 100])
-    st.plotly_chart(fig_rel, use_container_width=True)
+# =============================================================================
+# Row 1: On-time % heatmap + Ghost trains
+# =============================================================================
 
-with col_b:
-    st.subheader("Service Frequency (Headway)")
-    fig_headway = px.bar(
-        df_headway, x='LINE_ID', y='AVG_HEADWAY_MINS', color='HEADWAY_VARIANCE',
-        title="Avg Min between Trains (Color = Bunching/Variance)",
-        color_continuous_scale='YlOrRd'
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("On-Time % by Line & Period")
+    ot = data["on_time"]
+    if not ot.empty:
+        pivot = ot.pivot(index="LINE_ID", columns="SERVICE_PERIOD", values="ON_TIME_PCT")
+        col_order = [c for c in ["AM Peak", "Off-Peak", "PM Peak"] if c in pivot.columns]
+        pivot = pivot[col_order]
+        fig = px.imshow(
+            pivot,
+            color_continuous_scale="RdYlGn",
+            range_color=[50, 100],
+            text_auto=".1f",
+            labels={"color": "On-Time %"},
+        )
+        fig.update_layout(margin=dict(t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+with col2:
+    st.subheader("Ghost Train Rate by Line")
+    gt = data["ghost_trains"].sort_values("GHOST_PCT", ascending=True)
+    fig = px.bar(
+        gt, x="GHOST_PCT", y="LINE_ID", orientation="h",
+        color="GHOST_PCT", color_continuous_scale="OrRd",
+        labels={"GHOST_PCT": "Ghost Train %", "LINE_ID": ""},
+        text="GHOST_PCT",
     )
-    st.plotly_chart(fig_headway, use_container_width=True)
+    fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig.update_layout(margin=dict(t=20, b=20), coloraxis_showscale=False)
+    st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
-# --- 5. PERFORMANCE BIAS & STABILITY ---
-col_c, col_d = st.columns(2)
-with col_c:
-    st.subheader("The 'Peak Penalty': Prediction Accuracy")
-    fig_peak = px.box(df_gold, x="PERIOD", y="PREDICTION_ERROR_SECONDS", color="LINE_ID",
-                     category_orders={"PERIOD": ["AM Peak", "Off-Peak", "PM Peak"]})
-    fig_peak.update_yaxes(range=[-300, 600], title="Error (Seconds)")
-    st.plotly_chart(fig_peak, use_container_width=True)
+# =============================================================================
+# Row 2: Reliability heatmap + Headway
+# =============================================================================
 
-with col_d:
-    st.subheader("Data Stability: Highest Jitter")
-    fig_jitter = px.bar(df_jitter.sort_values('AVG_JITTER', ascending=True),
-                        x='AVG_JITTER', y='STATION_NAME', color='LINE_ID', orientation='h',
-                        labels={'AVG_JITTER': 'Jitter (Sec)', 'STATION_NAME': ''})
-    st.plotly_chart(fig_jitter, use_container_width=True)
+col3, col4 = st.columns(2)
+
+with col3:
+    st.subheader("Line Reliability by Hour")
+    rel = data["reliability"]
+    if not rel.empty:
+        pivot_rel = rel.pivot(index="LINE_NAME", columns="HR", values="RELIABILITY_PCT")
+        fig = px.imshow(
+            pivot_rel,
+            color_continuous_scale="RdYlGn",
+            range_color=[0, 100],
+            labels={"color": "Good Service %", "x": "Hour (UTC)", "y": ""},
+        )
+        fig.update_layout(margin=dict(t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+with col4:
+    st.subheader("Service Frequency & Regularity")
+    hw = data["headway"]
+    if not hw.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=hw["LINE_ID"], y=hw["AVG_HEADWAY_MINS"],
+            name="Avg Headway (min)",
+            marker_color="steelblue",
+        ))
+        fig.add_trace(go.Scatter(
+            x=hw["LINE_ID"], y=hw["HEADWAY_CV_PCT"],
+            name="Regularity CV %", yaxis="y2",
+            mode="markers+lines",
+            marker=dict(size=8, color="tomato"),
+            line=dict(dash="dot"),
+        ))
+        fig.update_layout(
+            yaxis=dict(title="Avg Headway (min)"),
+            yaxis2=dict(title="CV % (lower = more regular)", overlaying="y", side="right"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(t=40, b=20),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
-# --- 6. CROWDING, ACCESS & TICKER ---
-col_e, col_f = st.columns([2, 1])
-with col_e:
-    st.subheader("Crowding Trends & Lift Status")
-    sub_c1, sub_c2 = st.columns(2)
-    with sub_c1:
-        df_crowd['OBSERVATION_TIME_UTC'] = pd.to_datetime(df_crowd['OBSERVATION_TIME_UTC'])
-        df_hourly = df_crowd.set_index('OBSERVATION_TIME_UTC').resample('H').mean().reset_index()
-        st.line_chart(df_hourly, x="OBSERVATION_TIME_UTC", y="CROWDING_PERCENTAGE")
-    with sub_c2:
-        st.bar_chart(df_lift, x="STATION_ID", y="DISRUPTION_COUNT", color="#ff4b4b")
+# =============================================================================
+# Row 3: Peak penalty box plot + Jitter
+# =============================================================================
 
-with col_f:
-    st.subheader("🕒 Live Arrival Ticker")
-    recent = session.sql("""
-        SELECT actual_arrival_ts::time as TIME, LINE_ID, STATION_NAME, prediction_error_seconds as DELAY
-        FROM GOLD_TFL_ARRIVAL_PERFORMANCE ORDER BY actual_arrival_ts DESC LIMIT 8
-    """).to_pandas()
-    st.dataframe(recent, hide_index=True)
+col5, col6 = st.columns(2)
+
+with col5:
+    st.subheader("Prediction Error by Period")
+    gd = data["gold_sample"]
+    if not gd.empty:
+        fig = px.box(
+            gd, x="SERVICE_PERIOD", y="PREDICTION_ERROR_SECONDS", color="LINE_ID",
+            category_orders={"SERVICE_PERIOD": ["AM Peak", "Off-Peak", "PM Peak"]},
+            labels={"PREDICTION_ERROR_SECONDS": "Error (seconds)", "SERVICE_PERIOD": ""},
+        )
+        fig.update_yaxes(range=[-300, 600])
+        fig.update_layout(margin=dict(t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+with col6:
+    st.subheader("Prediction Jitter — Most Unstable Stations")
+    jt = data["jitter"].sort_values("AVG_JITTER", ascending=True)
+    fig = px.bar(
+        jt, x="AVG_JITTER", y="STATION_NAME", color="LINE_ID", orientation="h",
+        labels={"AVG_JITTER": "Avg Jitter (sec)", "STATION_NAME": ""},
+    )
+    fig.update_layout(margin=dict(t=20, b=20))
+    st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# =============================================================================
+# Row 4: Crowding + Lift disruptions (trend + current)
+# =============================================================================
+
+col7, col8 = st.columns([3, 2])
+
+with col7:
+    st.subheader("Crowding & Lift Disruptions Over Time")
+    tab1, tab2 = st.tabs(["Crowding Trend", "Lift Disruption Trend"])
+    with tab1:
+        cr = data["crowding"].copy()
+        if not cr.empty:
+            cr["OBSERVATION_TIME_UTC"] = pd.to_datetime(cr["OBSERVATION_TIME_UTC"])
+            hourly = cr.set_index("OBSERVATION_TIME_UTC").resample("h").mean().reset_index()
+            fig = px.area(
+                hourly, x="OBSERVATION_TIME_UTC", y="CROWDING_PERCENTAGE",
+                labels={"CROWDING_PERCENTAGE": "% of Baseline", "OBSERVATION_TIME_UTC": ""},
+            )
+            fig.add_hline(y=100, line_dash="dot", line_color="red", annotation_text="Baseline")
+            st.plotly_chart(fig, use_container_width=True)
+    with tab2:
+        lt = data["lift_trend"].copy()
+        if not lt.empty:
+            lt["HOUR_BUCKET"] = pd.to_datetime(lt["HOUR_BUCKET"])
+            fig = px.line(
+                lt, x="HOUR_BUCKET", y="DISRUPTIONS",
+                labels={"DISRUPTIONS": "Active Lift Disruptions", "HOUR_BUCKET": ""},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+with col8:
+    st.subheader("Current Lift Outages")
+    lf = data["lift"]
+    if not lf.empty:
+        fig = px.bar(
+            lf, x="DISRUPTION_COUNT", y="STATION_ID", orientation="h",
+            color="DISRUPTION_COUNT", color_continuous_scale="Reds",
+            labels={"DISRUPTION_COUNT": "Disruptions", "STATION_ID": ""},
+        )
+        fig.update_layout(coloraxis_showscale=False, margin=dict(t=20, b=20))
+        st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# =============================================================================
+# Live ticker
+# =============================================================================
+
+st.subheader("🕒 Live Arrival Ticker")
+ticker = data["ticker"].copy()
+if not ticker.empty:
+    ticker["STATUS"] = ticker["IS_ON_TIME"].map({1: "✅ On Time", 0: "⚠️ Late"})
+    ticker = ticker.drop(columns=["IS_ON_TIME"])
+    ticker["DELAY_SEC"] = ticker["DELAY_SEC"].apply(lambda x: f"+{x}s" if x > 0 else f"{x}s")
+    st.dataframe(ticker, hide_index=True, use_container_width=True)
