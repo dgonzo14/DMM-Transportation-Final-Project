@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from mta_next.mta_arrival_inference import run_mta_gold_inference_once
 from mta_next.mta_pipeline import BRONZE_TYPES, run_mta_silver_pipeline_once
@@ -14,12 +14,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 
 def run_mta_backfill(
-    start_date: str | None,
-    end_date: str | None,
+    start_date: Optional[str],
+    end_date: Optional[str],
     bronze_type: str,
     layers: str,
     mode: str,
-    max_objects: int | None = None,
+    max_objects: Optional[int] = None,
 ) -> Dict[str, Any]:
     dag_run_id = f"backfill__{utc_now().isoformat()}"
     results: Dict[str, Any] = {
