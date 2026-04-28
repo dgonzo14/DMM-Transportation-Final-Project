@@ -200,4 +200,19 @@ bronze/tfl/arrivals/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_arrivals_tube.
 
 This partitioning allows LinuxLab and Airflow runs to process specific time windows without scanning the full object store. It also supports controlled replay of a day or hour when debugging or backfilling.
 
+## Weather Production Pipeline
+
+The weather pipeline lives in `weather-prod/`. It provides environmental context for transit performance analysis by ingesting real-time data from the Open-Meteo API for NYC and London.
+
+### Automation & Security
+To ensure a continuous 24/7 ingestion cycle, the pipeline utilizes **RSA-2048 Key-Pair Authentication**. This enables the `weather_producer.py` to run autonomously on remote servers without requiring manual browser-based MFA.
+
+### Resiliency & De-duplication
+- **Dual-Destination Sink:** The producer stages data to a `LocalFileSystemSink` (backup) before pushing to the Snowflake `RAW` schema, preventing data loss during network interruptions.
+- **Declarative De-duplication:** The Silver layer utilizes a window-function-based view (`WEATHER_HOURLY_FINAL`) to reconcile overlaps between historical backfills and live streaming data using `ROW_NUMBER()` over city and timestamp partitions.
+
+### Run the Weather Producer
+```bash
+python weather-prod/weather_producer.py
+
 
