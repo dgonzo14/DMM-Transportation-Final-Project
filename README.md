@@ -14,6 +14,7 @@ Spark is used as a processing component in the silver and gold stages. Snowflake
 | --- | --- |
 | `mta_prod/` | Production MTA pipeline: bronze producer, Spark silver runner, Spark gold analytics, schemas, Snowflake helpers, and Airflow DAG. |
 | `tfl-prod/` | Production TfL pipeline: TfL API producer, Spark silver/gold jobs, Streamlit app, SQL, and Airflow DAGs. |
+| `weather-prod/` | Automated weather pipeline: Includes Open-Meteo producer, RSA key-pair authentication, and Snowflake SQL de-duplication views. |
 | `feeds.json` | MTA GTFS-Realtime subway feed definitions used by the MTA producer. |
 | `.env.example` | Template for local/LinuxLab environment variables. |
 | `requirements.txt` | Shared Python dependencies for producers, Spark jobs, Snowflake writes, and R2 access. |
