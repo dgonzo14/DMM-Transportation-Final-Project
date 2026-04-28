@@ -5,11 +5,19 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence
 
 from mta_spark_next.config import Settings, get_settings
-from mta_spark_next.mta_schemas import CREATE_TABLE_STATEMENTS, SILVER_HISTORY_TABLE, SILVER_TABLES
+from mta_spark_next.mta_schemas import (
+    BRONZE_HISTORY_TABLE,
+    CREATE_TABLE_STATEMENTS,
+    GOLD_HISTORY_TABLE,
+    GOLD_TABLES,
+    SILVER_HISTORY_TABLE,
+    SILVER_TABLES,
+)
 from mta_spark_next.snowflake_io import sql_in_list
 
 if TYPE_CHECKING:
@@ -298,10 +306,12 @@ def delete_rows_by_values(
 
 
 def write_snowflake(df: DataFrame, table_name: str, settings: SparkMTASettings, mode: str = "append") -> None:
+    df = _prepare_for_snowflake_write(df, table_name)
     (
         df.write.format("net.snowflake.spark.snowflake")
         .options(**snowflake_options(settings))
         .option("dbtable", table_name)
+        .option("column_mapping", "name")
         .mode(mode)
         .save()
     )
@@ -323,6 +333,42 @@ def read_snowflake_table(spark: SparkSession, settings: SparkMTASettings, table_
         .option("dbtable", table_name)
         .load()
     )
+
+
+@lru_cache(maxsize=None)
+def _table_columns(table_name: str) -> tuple[str, ...]:
+    ddl = CREATE_TABLE_STATEMENTS.get(table_name)
+    if not ddl:
+        return ()
+
+    body = ddl[ddl.find("(") + 1 : ddl.rfind(")")]
+    columns: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip().rstrip(",")
+        if not line:
+            continue
+        columns.append(line.split()[0].strip('"'))
+    return tuple(columns)
+
+
+def _prepare_for_snowflake_write(df: DataFrame, table_name: str) -> DataFrame:
+    from pyspark.sql import functions as F
+
+    loaded_at_tables = {BRONZE_HISTORY_TABLE, SILVER_HISTORY_TABLE, GOLD_HISTORY_TABLE, *SILVER_TABLES}
+    updated_at_tables = set(GOLD_TABLES)
+
+    if table_name in loaded_at_tables and "LOADED_AT" not in df.columns:
+        df = df.withColumn("LOADED_AT", F.current_timestamp())
+    if table_name in updated_at_tables and "UPDATED_AT" not in df.columns:
+        df = df.withColumn("UPDATED_AT", F.current_timestamp())
+
+    table_columns = _table_columns(table_name)
+    if not table_columns:
+        return df
+
+    ordered_columns = [column for column in table_columns if column in df.columns]
+    extra_columns = [column for column in df.columns if column not in ordered_columns]
+    return df.select(*ordered_columns, *extra_columns)
 
 
 def bronze_base_path(settings: SparkMTASettings, bronze_type: str) -> str:
