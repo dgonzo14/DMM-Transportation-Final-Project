@@ -5,3 +5,5 @@ protobuf>=4.25,<6
 gtfs-realtime-bindings>=2.0
 pandas>=2.0
 snowflake-connector-python[pandas]>=3.0
+pyspark>=3.4,<3.5
+cryptography>=42
