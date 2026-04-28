@@ -152,15 +152,7 @@ def create_spark(settings: SparkMTASettings, app_name: str = "mta-spark-silver")
     from pyspark.sql import SparkSession
 
     cores = os.getenv("SPARK_WORKER_CORES", "*")
-    master = (
-        os.getenv("MTA_SPARK_MASTER")
-        or os.getenv("SPARK_MASTER_URL")
-        or (
-            f"spark://{os.getenv('SLURMD_NODENAME')}:{os.getenv('SPARK_MASTER_PORT')}"
-            if os.getenv("SLURMD_NODENAME") and os.getenv("SPARK_MASTER_PORT")
-            else f"local[{cores}]"
-        )
-    )
+    master = os.getenv("MTA_SPARK_MASTER") or f"local[{cores}]"
     builder = (
         SparkSession.builder.appName(app_name)
         .master(master)
