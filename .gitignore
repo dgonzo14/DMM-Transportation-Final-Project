@@ -1,0 +1,9 @@
+# Security: Do NOT push keys
+*.p8
+*.pub
+
+# Local Data and Environment
+landing_zone/
+venv/
+__pycache__/
+.DS_Store
