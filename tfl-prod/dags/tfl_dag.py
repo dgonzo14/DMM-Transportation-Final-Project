@@ -39,7 +39,7 @@ DEFAULT_ARGS = {
 with DAG(
     dag_id="tfl_silver",
     description="TfL bronze -> silver, every 10 minutes",
-    schedule_interval="*/10 * * * *",
+    schedule="*/10 * * * *",
     start_date=datetime(2026, 4, 27),
     catchup=False,
     max_active_runs=1,
@@ -57,7 +57,7 @@ with DAG(
 with DAG(
     dag_id="tfl_gold",
     description="TfL bronze -> gold arrival performance, hourly",
-    schedule_interval="0 * * * *",
+    schedule="0 * * * *",
     start_date=datetime(2026, 4, 27),
     catchup=False,
     max_active_runs=1,

@@ -100,18 +100,37 @@ SCHEMA_REGISTRY = {
 def read_bronze(spark: SparkSession, data_type: str, paths: list[str]) -> DataFrame:
     """
     Reads bronze JSON files for a given data type from explicit paths.
-    Schema is looked up from SCHEMA_REGISTRY.
+
+    Uses recursiveFileLookup=true to walk year=/month=/day=/hour= partitions
+    without Spark trying to infer partition columns from directory names,
+    which causes CONFLICTING_DIRECTORY_STRUCTURES when loading multiple days.
     """
     if data_type not in SCHEMA_REGISTRY:
         raise ValueError(f"Unknown data_type {data_type!r}. "
                          f"Valid: {list(SCHEMA_REGISTRY)}")
+    # Filter to paths that actually exist in R2 before loading.
+    # Avoids PATH_NOT_FOUND when end date includes today but the partition
+    # hasn't been written yet (e.g. day=28 at 04:00 UTC).
+    sc = spark.sparkContext
+    existing = [
+        p for p in paths
+        if sc._jvm.org.apache.hadoop.fs.Path(p).getFileSystem(
+            sc._jsc.hadoopConfiguration()
+        ).exists(sc._jvm.org.apache.hadoop.fs.Path(p))
+    ]
+
+    if not existing:
+        print(f"  [read_bronze] no existing paths found for {data_type}, returning empty DataFrame")
+        return spark.createDataFrame([], SCHEMA_REGISTRY[data_type]())
+
+    print(f"  [read_bronze] {len(existing)}/{len(paths)} paths exist for {data_type}")
     return (
         spark.read
         .format("json")
         .schema(SCHEMA_REGISTRY[data_type]())
         .option("recursiveFileLookup", "true")
         .option("pathGlobFilter", "*.json")
-        .load(paths)
+        .load(existing)
     )
 
 
@@ -124,12 +143,17 @@ def stream_bronze(spark: SparkSession, data_type: str, base_path: str,
     """
     if data_type not in SCHEMA_REGISTRY:
         raise ValueError(f"Unknown data_type {data_type!r}.")
-    return (
+
+    reader = (
         spark.readStream
         .format("json")
         .schema(SCHEMA_REGISTRY[data_type]())
         .option("recursiveFileLookup", "true")
         .option("pathGlobFilter", "*.json")
         .option("maxFilesPerTrigger", max_files_per_trigger)
-        .load(base_path)
     )
+
+    # base_path can be a single string or a list of explicit day-level paths
+    if isinstance(base_path, list):
+        return reader.load(base_path)
+    return reader.load(base_path)

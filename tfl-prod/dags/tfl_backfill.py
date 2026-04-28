@@ -34,15 +34,15 @@ from tfl_gold import build_arrival_performance
 # Arrivals is much larger than the other three combined so it gets more cores.
 # Total = 8, matching the machine. Adjust if running on different hardware.
 CORE_ALLOCATION = {
-    "arrivals":         "2",
-    "crowding":         "4",
+    "arrivals":         "4",
+    "crowding":         "2",
     "status":           "1",
     "lift_disruptions": "1",
 }
 
 
 def backfill_type(spark, data_type: str, start: datetime, end: datetime,
-                  include_gold: bool = False):
+                  include_gold: bool = False, only_gold: bool = False):
     paths = day_paths(data_type, start, end)
     print(f"\n[backfill] {data_type}: {len(paths)} day-paths "
           f"({start.date()} -> {end.date()})")
@@ -51,10 +51,20 @@ def backfill_type(spark, data_type: str, start: datetime, end: datetime,
         print("  no paths generated -- check your date range")
         return
 
-    transform_fn, table = SILVER_TRANSFORMS[data_type]
-    raw    = read_bronze(spark, data_type, paths)
-    silver = transform_fn(raw)
+    raw = read_bronze(spark, data_type, paths)
 
+    if only_gold:
+        if data_type != "arrivals":
+            print(f"  skipping {data_type} -- gold only applies to arrivals")
+            return
+        print("[backfill] gold only -- skipping silver")
+        gold = build_arrival_performance(raw)
+        write_snowflake(gold, "TFL_ARRIVAL_PERFORMANCE_GOLD")
+        print(f"  TFL_ARRIVAL_PERFORMANCE_GOLD: {gold.count()} rows")
+        return
+
+    transform_fn, table = SILVER_TRANSFORMS[data_type]
+    silver = transform_fn(raw)
     write_snowflake(silver, table)
     print(f"  {table}: {silver.count()} rows")
 
@@ -66,7 +76,7 @@ def backfill_type(spark, data_type: str, start: datetime, end: datetime,
 
 
 def _backfill_worker(data_type: str, start: datetime, end: datetime,
-                     include_gold: bool):
+                     include_gold: bool, only_gold: bool = False):
     """
     Runs in a subprocess -- each worker gets its own SparkSession.
     Uses spawn (not fork) to avoid Py4J/JVM conflicts between contexts.
@@ -76,21 +86,33 @@ def _backfill_worker(data_type: str, start: datetime, end: datetime,
     os.environ["SPARK_WORKER_CORES"] = CORE_ALLOCATION.get(data_type, "2")
     spark = create_spark(f"tfl-backfill-{data_type}")
     try:
-        backfill_type(spark, data_type, start, end, include_gold=include_gold)
+        backfill_type(spark, data_type, start, end,
+                      include_gold=include_gold, only_gold=only_gold)
     finally:
         spark.stop()
 
 
 def run_parallel(types: list, start: datetime, end: datetime,
-                 include_gold: bool):
-    # spawn avoids JVM/Py4J conflicts between forked Spark contexts
+                 include_gold: bool, only_gold: bool = False):
+    import signal
+
     ctx = mp.get_context("spawn")
     procs = []
+
+    def _kill_all(signum, frame):
+        print("\n[backfill] interrupted — terminating all workers...")
+        for _, p in procs:
+            if p.is_alive():
+                p.terminate()
+        raise SystemExit(1)
+
+    signal.signal(signal.SIGINT, _kill_all)
+    signal.signal(signal.SIGTERM, _kill_all)
 
     for data_type in types:
         p = ctx.Process(
             target=_backfill_worker,
-            args=(data_type, start, end, include_gold),
+            args=(data_type, start, end, include_gold, only_gold),
             name=f"backfill-{data_type}",
         )
         p.start()
@@ -115,23 +137,26 @@ def run_parallel(types: list, start: datetime, end: datetime,
 
 
 def run_sequential(types: list, start: datetime, end: datetime,
-                   include_gold: bool):
+                   include_gold: bool, only_gold: bool = False):
     spark = create_spark("tfl-backfill")
     try:
         for data_type in types:
-            backfill_type(spark, data_type, start, end, include_gold=include_gold)
+            backfill_type(spark, data_type, start, end,
+                          include_gold=include_gold, only_gold=only_gold)
     finally:
         spark.stop()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--type", required=True,
+    parser.add_argument("--type", required=False,
                         choices=[*SILVER_TRANSFORMS.keys(), "all"])
     parser.add_argument("--start", required=True, help="YYYY-MM-DD")
     parser.add_argument("--end",   help="YYYY-MM-DD (default: today)")
     parser.add_argument("--gold",  action="store_true",
                         help="Also build gold tables (arrivals only)")
+    parser.add_argument("--only-gold", action="store_true",
+                        help="Skip silver, only build gold (arrivals only)")
     parser.add_argument("--parallel", action="store_true",
                         help="Run all types in parallel subprocesses "
                              "(recommended with 8 cores, ignored for single type)")
@@ -142,13 +167,20 @@ def main():
              if args.end else datetime.now(UTC))
     types = list(SILVER_TRANSFORMS.keys()) if args.type == "all" else [args.type]
 
+    only_gold = args.only_gold
+
+    # --only-gold implies arrivals only regardless of --type
+    if only_gold:
+        types = ["arrivals"]
+        print("[backfill] gold-only mode -- reading arrivals bronze, skipping silver")
+
     if args.parallel and len(types) > 1:
         print(f"[backfill] parallel mode -- {len(types)} types across 8 cores")
-        run_parallel(types, start, end, include_gold=args.gold)
+        run_parallel(types, start, end, include_gold=args.gold, only_gold=only_gold)
     else:
         if args.parallel and len(types) == 1:
             print("[backfill] only one type specified, running sequentially")
-        run_sequential(types, start, end, include_gold=args.gold)
+        run_sequential(types, start, end, include_gold=args.gold, only_gold=only_gold)
 
 
 if __name__ == "__main__":

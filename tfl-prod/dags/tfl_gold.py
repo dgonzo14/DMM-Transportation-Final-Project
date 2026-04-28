@@ -113,18 +113,28 @@ def build_arrival_performance(df: DataFrame) -> DataFrame:
     return enriched
 
 
-def run_gold(spark: SparkSession, days_back: int = 2):
+def run_gold(spark: SparkSession, hours_back: int = 48):
     """
-    Reads the last N days of bronze arrivals directly and writes gold.
-    Runs hourly via Airflow. The 2-day default ensures late-arriving
-    files from the previous day are always included.
+    Reads the last N hours of bronze arrivals directly and writes gold.
+    Calculates the window based on Missouri (US/Central) time.
     """
-    from datetime import datetime, timedelta, UTC
-    now   = datetime.now(UTC)
-    start = now - timedelta(days=days_back)
-    paths = day_paths("arrivals", start, now)
+    from datetime import datetime, timedelta
+    import pytz # Standard library for timezone handling
 
-    print(f"[gold] arrivals: {start.date()} → {now.date()} ({len(paths)} day-paths)")
+    # Define Missouri Timezone
+    mo_tz = pytz.timezone('US/Central')
+    
+    # Get current time in Missouri
+    now_mo = datetime.now(mo_tz)
+    
+    # Subtract the hours from Missouri time
+    start_mo = now_mo - timedelta(hours=hours_back)
+    
+    # day_paths still needs to know the range to scan R2/Bronze
+    paths = day_paths("arrivals", start_mo, now_mo)
+
+    print(f"[gold] Missouri Window: {start_mo.strftime('%Y-%m-%d %H:%M %Z')} → {now_mo.strftime('%Y-%m-%d %H:%M %Z')}")
+    print(f"[gold] processing {hours_back} hours of data...")
 
     raw  = read_bronze(spark, "arrivals", paths)
     gold = build_arrival_performance(raw)
@@ -133,17 +143,17 @@ def run_gold(spark: SparkSession, days_back: int = 2):
     write_snowflake(gold, "TFL_ARRIVAL_PERFORMANCE_GOLD", mode="append")
     print(f"[gold] TFL_ARRIVAL_PERFORMANCE_GOLD: {count} rows")
 
-
 if __name__ == "__main__":
     import argparse
     from tfl_common import create_spark
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--days-back", type=int, default=2)
+    # If you run --hours-back 2, it's 2 hours before Missouri's current clock
+    parser.add_argument("--hours-back", type=int, default=12)
     args = parser.parse_args()
 
     spark = create_spark("tfl-gold")
     try:
-        run_gold(spark, days_back=args.days_back)
+        run_gold(spark, hours_back=args.hours_back)
     finally:
         spark.stop()

@@ -116,6 +116,7 @@ def create_spark(app_name: str = "tfl-pipeline") -> SparkSession:
         .config("spark.hadoop.fs.s3a.retry.interval", "500")
         .config("spark.hadoop.fs.s3a.retry.throttle.interval", "100")
         .config("spark.hadoop.fs.s3a.assumed.role.session.duration", "1800")
+        .config("spark.snowflake.pushdown", "off")
         .getOrCreate()
     )
 
