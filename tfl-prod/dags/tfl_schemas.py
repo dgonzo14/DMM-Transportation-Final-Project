@@ -108,9 +108,7 @@ def read_bronze(spark: SparkSession, data_type: str, paths: list[str]) -> DataFr
     if data_type not in SCHEMA_REGISTRY:
         raise ValueError(f"Unknown data_type {data_type!r}. "
                          f"Valid: {list(SCHEMA_REGISTRY)}")
-    # Filter to paths that actually exist in R2 before loading.
-    # Avoids PATH_NOT_FOUND when end date includes today but the partition
-    # hasn't been written yet (e.g. day=28 at 04:00 UTC).
+
     sc = spark.sparkContext
     existing = [
         p for p in paths
@@ -153,7 +151,6 @@ def stream_bronze(spark: SparkSession, data_type: str, base_path: str,
         .option("maxFilesPerTrigger", max_files_per_trigger)
     )
 
-    # base_path can be a single string or a list of explicit day-level paths
     if isinstance(base_path, list):
         return reader.load(base_path)
     return reader.load(base_path)

@@ -121,16 +121,12 @@ def run_gold(spark: SparkSession, hours_back: int = 48):
     from datetime import datetime, timedelta
     import pytz # Standard library for timezone handling
 
-    # Define Missouri Timezone
-    mo_tz = pytz.timezone('US/Central')
+    mo_tz = pytz.timezone('US/Central') # adjust for stuff not in UTC
     
-    # Get current time in Missouri
     now_mo = datetime.now(mo_tz)
     
-    # Subtract the hours from Missouri time
     start_mo = now_mo - timedelta(hours=hours_back)
     
-    # day_paths still needs to know the range to scan R2/Bronze
     paths = day_paths("arrivals", start_mo, now_mo)
 
     print(f"[gold] Missouri Window: {start_mo.strftime('%Y-%m-%d %H:%M %Z')} → {now_mo.strftime('%Y-%m-%d %H:%M %Z')}")
