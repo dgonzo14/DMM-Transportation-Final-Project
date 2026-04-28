@@ -9,8 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence
 
-from mta_spark_next.config import Settings, get_settings
-from mta_spark_next.mta_schemas import (
+from mta_prod.config import Settings, get_settings
+from mta_prod.mta_schemas import (
     BRONZE_HISTORY_TABLE,
     CREATE_TABLE_STATEMENTS,
     GOLD_HISTORY_TABLE,
@@ -18,7 +18,7 @@ from mta_spark_next.mta_schemas import (
     SILVER_HISTORY_TABLE,
     SILVER_TABLES,
 )
-from mta_spark_next.snowflake_io import sql_in_list
+from mta_prod.snowflake_io import sql_in_list
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -85,7 +85,7 @@ def get_private_key_string(path: Path, password: Optional[str] = None) -> str:
     return private_key_string.replace("\n", "")
 
 
-def _default_compare_database(base: Settings) -> str:
+def _default_database(base: Settings) -> str:
     source_database = _require(base.snowflake_database, "SNOWFLAKE_DATABASE")
     return source_database
 
@@ -103,33 +103,28 @@ def _r2_endpoint(base: Settings) -> Optional[str]:
 
 
 def _checkpoint_base(base: Settings, target_database: str) -> str:
-    configured = os.getenv("MTA_SPARK_CKPT_BASE") or os.getenv("CKPT_BASE")
+    configured = os.getenv("MTA_CKPT_BASE") or os.getenv("CKPT_BASE")
     if configured:
         return configured.rstrip("/")
 
     if base.mta_sink_backend == "local":
-        return str(base.repo_root / ".spark_checkpoints" / "mta_spark_next" / target_database)
+        return str(base.repo_root / ".spark_checkpoints" / "mta_prod" / target_database)
 
     bucket = _require(base.r2_bucket, "R2_BUCKET")
-    return f"s3a://{bucket}/checkpoints/mta_spark_next/{target_database}/silver"
+    return f"s3a://{bucket}/checkpoints/mta_prod/{target_database}/silver"
 
 
 def get_spark_mta_settings(target_database: Optional[str] = None) -> SparkMTASettings:
     base = get_settings()
-    database = (
-        target_database
-        or os.getenv("MTA_SPARK_SNOWFLAKE_DATABASE")
-        or os.getenv("MTA_SPARK_DATABASE")
-        or _default_compare_database(base)
-    )
-    schema = os.getenv("MTA_SPARK_SNOWFLAKE_SCHEMA") or base.snowflake_schema
+    database = target_database or _default_database(base)
+    schema = base.snowflake_schema
     key_file = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH") or (
         str(base.snowflake_private_key_file) if base.snowflake_private_key_file else None
     )
 
     return SparkMTASettings(
         base=base,
-        target_database=_identifier(_require(database, "MTA_SPARK_SNOWFLAKE_DATABASE")),
+        target_database=_identifier(_require(database, "SNOWFLAKE_DATABASE")),
         target_schema=_identifier(_require(schema, "SNOWFLAKE_SCHEMA")),
         snowflake_url=_snowflake_url(base),
         snowflake_private_key_file=Path(_require(key_file, "SNOWFLAKE_PRIVATE_KEY_FILE")).expanduser().resolve(),
@@ -211,7 +206,7 @@ def _snowflake_connector_kwargs(settings: SparkMTASettings) -> dict[str, str]:
     return kwargs
 
 
-def ensure_compare_database_and_tables(
+def ensure_database_and_tables(
     settings: SparkMTASettings,
     table_names: Sequence[str] = (SILVER_HISTORY_TABLE, *SILVER_TABLES),
 ) -> None:

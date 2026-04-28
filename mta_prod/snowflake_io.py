@@ -7,8 +7,8 @@ import pandas as pd
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 
-from mta_next.config import Settings
-from mta_next.schemas import CREATE_TABLE_STATEMENTS
+from mta_prod.config import Settings
+from mta_prod.mta_schemas import CREATE_TABLE_STATEMENTS
 
 
 LOGGER = logging.getLogger(__name__)

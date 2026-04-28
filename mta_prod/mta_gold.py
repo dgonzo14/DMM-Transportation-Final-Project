@@ -16,18 +16,18 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from mta_spark_next.mta_common import (
+from mta_prod.mta_common import (
     create_spark,
     delete_rows_by_values,
-    ensure_compare_database_and_tables,
+    ensure_database_and_tables,
     get_spark_mta_settings,
     read_snowflake_query,
     table_fqn,
     write_snowflake,
 )
-from mta_spark_next.mta_schemas import GOLD_HISTORY_TABLE, GOLD_TABLES, SILVER_HISTORY_TABLE
-from mta_spark_next.snowflake_io import sql_in_list, sql_quote
-from mta_spark_next.utils import json_dumps, stable_hash, utc_now
+from mta_prod.mta_schemas import GOLD_HISTORY_TABLE, GOLD_TABLES, SILVER_HISTORY_TABLE
+from mta_prod.snowflake_io import sql_in_list, sql_quote
+from mta_prod.utils import json_dumps, stable_hash, utc_now
 
 
 LOGGER = logging.getLogger(__name__)
@@ -659,7 +659,7 @@ def run_mta_gold_inference_once(
     end_date = _parse_date_arg(end_date)
 
     settings = get_spark_mta_settings(target_database=target_database)
-    ensure_compare_database_and_tables(settings, [GOLD_HISTORY_TABLE, *GOLD_TABLES])
+    ensure_database_and_tables(settings, [GOLD_HISTORY_TABLE, *GOLD_TABLES])
 
     spark = create_spark(settings, app_name="mta-spark-gold")
     pending_df: Optional[DataFrame] = None
@@ -769,7 +769,7 @@ def main() -> None:
     parser.add_argument("--end-date", help="Inclusive end date filter in YYYY-MM-DD.")
     parser.add_argument("--force", action="store_true", help="Recompute gold outputs even if history shows success.")
     parser.add_argument("--max-objects", type=int, help="Optional cap for one-shot runs.")
-    parser.add_argument("--target-database", help="Override MTA_SPARK_SNOWFLAKE_DATABASE for this run.")
+    parser.add_argument("--target-database", help="Optional one-off Snowflake database override. Defaults to SNOWFLAKE_DATABASE.")
     args = parser.parse_args()
 
     run_mta_gold_inference_once(

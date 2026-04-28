@@ -8,20 +8,20 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import LongType
 
-from mta_spark_next.mta_schemas import SILVER_HISTORY_TABLE, SILVER_TABLES
-from mta_spark_next.utils import utc_now
-from mta_spark_next.mta_common import (
+from mta_prod.mta_schemas import SILVER_HISTORY_TABLE, SILVER_TABLES
+from mta_prod.utils import utc_now
+from mta_prod.mta_common import (
     bronze_base_path,
     bronze_day_paths,
     create_spark,
     delete_rows_by_object_keys,
-    ensure_compare_database_and_tables,
+    ensure_database_and_tables,
     get_spark_mta_settings,
     read_bronze_text_batch,
     read_bronze_text_stream,
     write_snowflake,
 )
-from mta_spark_next.mta_silver import (
+from mta_prod.mta_silver import (
     LONG_COLUMNS,
     RECORD_SCHEMA,
     TABLE_JSON_SCHEMAS,
@@ -181,7 +181,7 @@ def run_mta_spark_silver(
     settings = get_spark_mta_settings(target_database=target_database)
     checkpoint_base = checkpoint_base or settings.checkpoint_base
 
-    ensure_compare_database_and_tables(settings)
+    ensure_database_and_tables(settings)
     spark = create_spark(settings, app_name="mta-spark-silver")
     try:
         if start_date:
@@ -207,7 +207,7 @@ def run_mta_spark_silver(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Spark MTA bronze -> silver runner that writes the existing MTA tables to a compare database."
+        description="MTA bronze -> silver runner that writes production MTA tables to Snowflake."
     )
     parser.add_argument("--dag-run-id", help="Optional Airflow DAG run id.")
     parser.add_argument("--bronze-type", choices=[*BRONZE_TYPES, "all"], default="full_feed")
@@ -215,7 +215,7 @@ def main() -> None:
     parser.add_argument("--end-date", help="Batch mode inclusive end date in YYYY-MM-DD.")
     parser.add_argument("--checkpoint-base", help="Override Spark checkpoint base path.")
     parser.add_argument("--max-files-per-trigger", type=int, default=50)
-    parser.add_argument("--target-database", help="Override MTA_SPARK_SNOWFLAKE_DATABASE for this run.")
+    parser.add_argument("--target-database", help="Optional one-off Snowflake database override. Defaults to SNOWFLAKE_DATABASE.")
     args = parser.parse_args()
 
     summary = run_mta_spark_silver(

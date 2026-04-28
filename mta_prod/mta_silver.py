@@ -13,11 +13,11 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from mta_spark_next.mta_schemas import SILVER_HISTORY_TABLE, SILVER_TABLES
-from mta_spark_next.transforms_alerts import build_alert_frame
-from mta_spark_next.transforms_trip_updates import build_trip_update_frames
-from mta_spark_next.transforms_vehicle_positions import build_vehicle_position_frame
-from mta_spark_next.utils import json_dumps, parse_iso_timestamp, stable_hash
+from mta_prod.mta_schemas import SILVER_HISTORY_TABLE, SILVER_TABLES
+from mta_prod.transforms_alerts import build_alert_frame
+from mta_prod.transforms_trip_updates import build_trip_update_frames
+from mta_prod.transforms_vehicle_positions import build_vehicle_position_frame
+from mta_prod.utils import json_dumps, parse_iso_timestamp, stable_hash
 
 
 RECORD_SCHEMA = StructType(
