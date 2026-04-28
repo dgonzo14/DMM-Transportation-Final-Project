@@ -1,9 +1,6 @@
-.env
-.env.local
-.venv/
+
+venv/
 __pycache__/
-*.pyc
-logs/
+*.p8
+*.pub
 landing_zone/
-tfl-prod/landing_zone
-feeds.json
