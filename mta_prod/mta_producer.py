@@ -10,11 +10,11 @@ import requests
 from google.protobuf.json_format import MessageToDict
 from google.transit import gtfs_realtime_pb2
 
-from mta_next.bronze_io import BronzeSink, build_bronze_object_key, build_bronze_sink
-from mta_next.config import Settings, get_settings
-from mta_next.schemas import BRONZE_HISTORY_TABLE
-from mta_next.snowflake_io import append_history_rows, ensure_tables_exist, get_snowflake_connection
-from mta_next.utils import extract_route_ids_from_entity, json_dumps, parse_epoch_timestamp, utc_now
+from mta_prod.bronze_io import BronzeSink, build_bronze_object_key, build_bronze_sink
+from mta_prod.config import Settings, get_settings
+from mta_prod.mta_schemas import BRONZE_HISTORY_TABLE
+from mta_prod.snowflake_io import append_history_rows, ensure_tables_exist, get_snowflake_connection
+from mta_prod.utils import extract_route_ids_from_entity, json_dumps, parse_epoch_timestamp, utc_now
 
 
 LOGGER = logging.getLogger(__name__)

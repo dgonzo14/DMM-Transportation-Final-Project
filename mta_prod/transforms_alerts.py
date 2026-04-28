@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
-from mta_next.utils import first_translation_text, json_dumps, parse_epoch_timestamp, stable_hash
+from mta_prod.utils import first_translation_text, json_dumps, parse_epoch_timestamp, stable_hash
 
 
 def _alert_entities(envelope: Dict[str, Any]) -> Iterable[Dict[str, Any]]:

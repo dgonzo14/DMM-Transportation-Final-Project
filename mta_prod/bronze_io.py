@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import boto3
 
-from mta_next.config import Settings
+from mta_prod.config import Settings
 
 
 @dataclass(frozen=True)
